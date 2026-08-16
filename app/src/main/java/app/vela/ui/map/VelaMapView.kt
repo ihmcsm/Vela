@@ -1570,8 +1570,25 @@ fun VelaMapView(
                 // zoom/look-ahead don't ride a stale speed forever. A resumed fix re-measures.
                 if (sinceFix > 3.0) navPuck.kalman.decay(dtT.coerceAtMost(0.5))
                 val predicted = navPuck.targetM + navPuck.reckonedM
-                val eased = navPuck.progressM + (predicted - navPuck.progressM) * (1f - kotlin.math.exp(-dtEase / 0.25f))
-                navPuck.progressM = maxOf(navPuck.progressM, eased) // monotonic — never backward
+                // FRONT-TO-BACK SMOOTHNESS (issue #251). The puck used to ease toward `predicted`
+                // and then get clamped monotonic. Both halves are individually reasonable and
+                // together they surge and stall at exactly the fix cadence: every fix resets
+                // targetM/reckonedM, so `predicted` JUMPS by however much the dead reckoning
+                // over- or under-shot. Overshoot means predicted lands BEHIND the puck, the ease
+                // pulls backward, the monotonic clamp freezes the puck instead - and it stays
+                // frozen until the reckoning catches up. Undershoot lurches it forward. With GPS
+                // noise of a few metres, that is a stall or a lurch once a second, forever.
+                //
+                // Corrected in the RATE domain instead: the puck always advances at the modelled
+                // speed, and the fix error is fed in as a BOUNDED nudge to that speed. It cannot
+                // stall (the rate floor is 0 only when the model says stopped), it cannot lurch
+                // (the nudge is capped as a fraction of speed), and it is still monotonic. A big
+                // error closes over a couple of seconds rather than in one frame.
+                val err = predicted - navPuck.progressM
+                val maxCatchUp = navPuck.speed * 0.5 + 1.0   // m/s of extra closing speed
+                val maxHoldBack = navPuck.speed * 0.25 + 0.5 // ...and of braking, so it never reverses
+                val corr = (err / PUCK_CORRECT_TIME_S).coerceIn(-maxHoldBack, maxCatchUp)
+                navPuck.progressM += ((navPuck.speed + corr) * dtT.coerceAtMost(0.5)).coerceAtLeast(0.0)
                 val (ptC, segBrg) = pointAtMeters(routePolyline, routeCum, navPuck.progressM)
                 // Lateral de-jitter: drawn straight off the polyline, the puck traced every
                 // lane-level micro-kink of the dense OSM geometry - side-to-side wiggle "like a
@@ -1583,7 +1600,19 @@ fun VelaMapView(
                 // so wiggle shorter than the window CANCELS instead of shrinking. Pure geometry
                 // smoothing, no temporal lag; corners round by a couple of metres at speed,
                 // which is what Google's puck does too.
-                val win = (navPuck.speed * 0.7).coerceIn(5.0, 14.0)
+                // ...but the window WIDTH must not follow the live speed (issue #251, the
+                // side-to-side wobble this very smoothing was added to fix, 2026-07-24). On a
+                // curve the averaged point sits inside the arc by about win^2/(6R), so the width
+                // IS a lateral position: swinging it 5 m to 14 m with the speed estimate moves the
+                // puck ~0.6 m sideways on a 50 m curve and ~1.1 m on a 25 m one - and in
+                // heading-up nav the puck is the camera anchor, so that moves the WHOLE MAP.
+                // Speed noise became sideways motion. The width now eases with a long time
+                // constant: it still grows with speed over tens of seconds, which is all it was
+                // ever meant to do, but per-fix speed wobble cannot reach it.
+                val winTarget = (navPuck.speed * 0.7).coerceIn(5.0, 14.0)
+                navPuck.smoothWin = if (navPuck.smoothWin.isNaN()) winTarget
+                    else navPuck.smoothWin + (winTarget - navPuck.smoothWin) * (1f - kotlin.math.exp(-dtEase / PUCK_WIN_TAU_S))
+                val win = navPuck.smoothWin
                 var sLat = 0.0
                 var sLng = 0.0
                 for (k in 0 until PUCK_SMOOTH_SAMPLES) {
@@ -2434,6 +2463,7 @@ fun VelaMapView(
             var accepted = false
             if (!navPuck.engaged) {
                 navPuck.progressM = m; navPuck.targetM = m; navPuck.engaged = true
+                navPuck.smoothWin = Double.NaN // re-seed the window from the first real speed
                 navPuck.fwdRejects = 0
                 accepted = true
             } else {
@@ -4977,6 +5007,9 @@ private class NavPuck {
     var fwdRejects = 0            // consecutive over-maxStep forward steps — a persistent one is
                                   // the new reality (long fix gap at speed), accept it rather than
                                   // deadlock targetM against a stale plausibility cap
+    var smoothWin = Double.NaN    // the along-route smoothing half-window ACTUALLY in use, eased —
+                                  // see the note at its use site: tying it straight to the live
+                                  // speed made speed noise into sideways puck movement
     var speedAtAccept = 0.0       // kalman speed when the last fix was ACCEPTED — sizes the snap
                                   // look-ahead through an outage (the live model decays to ~0
                                   // exactly when the resume fix needs the window big)
@@ -5050,6 +5083,15 @@ private fun indexAtMeters(cum: DoubleArray, m: Double): Int {
 // Samples in the puck's along-route boxcar average; the half-window itself is speed-scaled at the
 // call site (5-14 m). Odd so the current position is one of the samples.
 private const val PUCK_SMOOTH_SAMPLES = 7
+
+/** Seconds the puck takes to absorb a fix-position error, spread over its own speed rather than
+ *  applied as a jump. Short enough that a real correction is not visibly late, long enough that
+ *  one noisy fix is not a lurch. */
+private const val PUCK_CORRECT_TIME_S = 0.6
+
+/** Time constant for the smoothing window's WIDTH. Deliberately long: the width is meant to track
+ *  the difference between town and motorway, not the difference between two consecutive fixes. */
+private const val PUCK_WIN_TAU_S = 2.5f
 
 private fun pointAtMeters(poly: List<LatLng>, cum: DoubleArray, meters: Double): Pair<LatLng, Float> {
     if (poly.size < 2) return (poly.firstOrNull() ?: LatLng(0.0, 0.0)) to 0f

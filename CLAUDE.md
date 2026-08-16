@@ -1988,7 +1988,29 @@ architecture note.
   `navSession.onLocation` path - puck/banner/voice keep working, `navStarved` keeps the
   "Searching for GPS" chip up for honesty, the first real fix re-anchors (route-plausible
   synthetics pass the outlier gate). Never feeds `tripStore.record` (no fake points in trips).
-  Nav zoom range is 18.0→15.5 (2026-07-14, was 17.3→15.0). **DEMO DRIVES RAN THE PUCK CLOCKS AT 3x (issue #251, fixed 2026-08-10 - the
+  Nav zoom range is 18.0→15.5 (2026-07-14, was 17.3→15.0). **PUCK JITTER: TWO COUPLINGS, BOTH FIXED 2026-08-16 (issue #251, real drives - the demo-clock
+  fix below was a DIFFERENT bug on the same symptom and did not help a real drive).**
+  (1) **Front-to-back.** The puck eased toward `targetM + reckonedM` and was then clamped
+  monotonic. Individually sensible, together a surge-and-stall at the fix cadence: every fix resets
+  targetM/reckonedM, so `predicted` JUMPS by whatever the dead reckoning over- or under-shot;
+  overshoot puts predicted BEHIND the puck, the ease pulls backward, and the monotonic clamp
+  FREEZES the puck until the reckoning catches up. With a few metres of ordinary GPS noise that is
+  a stall or a lurch every second. Corrected in the RATE domain now: the puck always advances at
+  the modelled speed and the fix error enters as a BOUNDED nudge to that rate
+  (`PUCK_CORRECT_TIME_S`, catch-up capped at 0.5x speed + 1 m/s, hold-back at 0.25x + 0.5). Cannot
+  stall, cannot lurch, still monotonic. Same synthetic fix stream through both rules: 6.8% of
+  frames stalled -> 0%, frame-to-frame speed error 36% -> 20%.
+  (2) **Side-to-side, and it was a REGRESSION from the 2026-07-24 commit that meant to fix the
+  jitter** (c00d31f1, which replaced a fixed 3-point average with a speed-scaled boxcar). The
+  window half-width was tied to the LIVE Kalman speed (`speed*0.7`, 5-14 m). On a curve the
+  averaged point sits inside the arc by ~`win^2/(6R)`, so the WIDTH IS A LATERAL POSITION: swinging
+  it 5->14 m moves the puck ~0.6 m sideways on a 50 m curve, ~1.1 m on a 25 m one - and in
+  heading-up nav the puck is the camera anchor, so it moves the WHOLE MAP. Speed noise was being
+  converted directly into sideways motion. The width now eases with a long time constant
+  (`PUCK_WIN_TAU_S` 2.5 s): it still tracks town-vs-motorway, which is all it was for, but per-fix
+  speed wobble cannot reach it. **Rule: anything that sets the puck's smoothing geometry must
+  change slowly - a fast-moving smoother is not a smoother.**
+  **DEMO DRIVES RAN THE PUCK CLOCKS AT 3x (issue #251, fixed 2026-08-10 - the
   dominant cause of the "record needle" swim).** `startDemoDrive` feeds
   `locationProvider.replay(fixes, speedup = 1f)` - REAL-TIME fixes - but it also sets
   `replaying`, and MapScreen keyed `replaySpeedup` off that flag alone, so a demo drive
