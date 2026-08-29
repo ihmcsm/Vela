@@ -1503,6 +1503,7 @@ fun VelaMapView(
         }
         wasNavRef[0] = true
         navPuck.engaged = false
+        navPuck.smoothWinM = Double.NaN // fresh route = re-seed the boxcar window from the first frame's speed
         val navWin = doubleArrayOf(Double.NaN) // route-split window end (m); relaunch = fresh route = re-anchor
         var lastNanos = 0L
         while (true) {
@@ -1583,7 +1584,15 @@ fun VelaMapView(
                 // so wiggle shorter than the window CANCELS instead of shrinking. Pure geometry
                 // smoothing, no temporal lag; corners round by a couple of metres at speed,
                 // which is what Google's puck does too.
-                val win = (navPuck.speed * 0.7).coerceIn(5.0, 14.0)
+                // The window follows MEAN speed, not the Kalman's per-frame accel ripple: ease
+                // the half-width toward its speed-target with a slow (~0.8 s) tau. Without this,
+                // `win` jitters every frame and on any curve the boxcar centre jitters laterally
+                // with it - a swim source the earlier bearing-only work never addressed. Seeded
+                // on the first frame so it does not ramp from 5 m at nav start.
+                val winTarget = (navPuck.speed * 0.7).coerceIn(5.0, 14.0)
+                navPuck.smoothWinM = if (navPuck.smoothWinM.isNaN()) winTarget
+                    else navPuck.smoothWinM + (winTarget - navPuck.smoothWinM) * (1f - kotlin.math.exp(-dtEase / 0.8f))
+                val win = navPuck.smoothWinM
                 var sLat = 0.0
                 var sLng = 0.0
                 for (k in 0 until PUCK_SMOOTH_SAMPLES) {
@@ -4968,6 +4977,13 @@ private class NavPuck {
                                    // runs in a recomposing scope, and kalman.update/reckonedM=0 are
                                    // NOT idempotent: re-running them on a mere recomposition re-injects
                                    // a stale speed and re-opens the blind reckoning window
+    var smoothWinM = Double.NaN    // LOW-PASSED half-width (m) of the position/bearing boxcar. The
+                                   // raw target win = speed*0.7, but speed is the KALMAN speed,
+                                   // which the per-frame accelerometer predict ripples at 60 fps -
+                                   // and on a curve a rippling boxcar width pulses the averaged
+                                   // point sideways (record-needle swim that geometry smoothing
+                                   // cannot cancel, because the smoother's own window is shaking).
+                                   // Eased slowly so the window follows MEAN speed, not accel noise.
     var displayBearing = Float.NaN // smoothed heading actually drawn (NaN = not yet seeded)
     var drawn: LatLng? = null     // last point actually drawn — the camera follows THIS, not the raw fix
     var raw: LatLng? = null       // off-route fallback position
