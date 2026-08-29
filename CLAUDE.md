@@ -2001,7 +2001,20 @@ architecture note.
   motion 6x the bottom band = rotation, not translation). After gating the scaling on
   `!demoDriving`: 0% stalled, chord wiggle **0.53**, camera wiggle **0.29** deg, on-screen top-band
   motion halved. The gate is `state.replaying && !state.demoDriving` - a genuine trip REPLAY still
-  emits fixes at 3x and MUST keep the scaling. **Nav-camera eases also use a CAPPED time
+  emits fixes at 3x and MUST keep the scaling.
+  **THE PUCK BOXCAR WINDOW IS LOW-PASSED (issue #251, 2026-08-28 - a POSITION-swim source the
+  earlier bearing-only work missed).** `win = speed*0.7` sizes the position+bearing boxcar, but
+  `navPuck.speed` is the KALMAN speed and `kalman.predict(accel, dt)` runs EVERY FRAME integrating
+  the raw forward accelerometer - so `win` rippled at accel-noise frequency, 60 fps. On any curve a
+  rippling boxcar half-width pulses the AVERAGED point sideways (~win^2/2R), and the same ripple
+  slid the chord endpoints (`progressM +/- win`) across vertices and hopped the BEARING too - a
+  record-needle swim geometry smoothing cannot cancel, because the smoother's own window is what
+  shakes. `navPuck.smoothWinM` low-passes the half-width toward its speed-target (tau 0.8 s, seeded
+  on the first frame, reset to NaN on route re-anchor), so the window follows MEAN speed not accel
+  ripple. Measured on a synthetic crinkly road: per-frame bearing jitter 0.82 -> 0.23 deg, lateral
+  swim on R=150 m 8.5 -> 0.14 cm. NB a DEMO drive cannot verify this (clean synthetic fixes, no
+  accel ripple) - needs a real drive; the demo only proves no regression.
+  **Nav-camera eases also use a CAPPED time
   step (`dtEase` <= 65 ms, same issue, video-diagnosed):** a main-thread hitch (the
   400 m road-label pass lands near junctions) used to deliver one frame whose exponential eases
   jumped 45-70% of their error at once - the map lurched sideways under a rock-steady puck.
