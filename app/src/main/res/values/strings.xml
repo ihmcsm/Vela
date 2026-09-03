@@ -90,7 +90,7 @@
     <string name="settings_topography">Terrain shading</string>
     <string name="settings_topography_hint">Shades hills and mountains on the map. Off by default.</string>
     <string name="settings_flock" translatable="false">Surveillance cameras</string>
-    <string name="settings_flock_hint" translatable="false">Shows mapped automated license-plate reader (Flock) cameras, from the community DeFlock project in OpenStreetMap. Off by default.</string>
+    <string name="settings_flock_hint" translatable="false">Shows mapped automated license-plate reader (Flock) cameras, from the community DeFlock project in OpenStreetMap. On by default.</string>
     <string name="settings_speed_cams">Speed cameras</string>
     <string name="settings_speed_cams_hint">Shows fixed radar and speed cameras mapped in OpenStreetMap. Fixed installations only; coverage follows the map, strongest in Europe. Off by default.</string>
     <string name="settings_flock_route_alert" translatable="false">Avoid surveillance cameras</string>
